@@ -137,7 +137,7 @@ async function startListening(isAutoRestart = false) {
 
     const dataArray = new Uint8Array(analyser.frequencyBinCount);
     const SILENCE_THRESHOLD = 12;
-    const SILENCE_DURATION = 900; // 0.9s of silence → auto-stop (faster analysis)
+    const SILENCE_DURATION = 600; // 0.6s of silence → auto-stop (fast detection)
     let hasSpeechStarted = false;
 
     // Pick a supported MIME type
@@ -164,7 +164,7 @@ async function startListening(isAutoRestart = false) {
         setStatus('ready', 'User voice ignored — listening for interviewer...');
         if (isContinuousMode) {
           listenLabel.textContent = 'Resuming...';
-          setTimeout(() => startListening(true), 800);
+          setTimeout(() => startListening(true), 300);
         } else {
           stopListeningUI();
         }
@@ -175,7 +175,7 @@ async function startListening(isAutoRestart = false) {
         setStatus('ready', 'No audio captured — resuming...');
         if (isContinuousMode) {
           listenLabel.textContent = 'Resuming...';
-          setTimeout(() => startListening(true), 1000);
+          setTimeout(() => startListening(true), 300);
         } else {
           stopListeningUI();
         }
@@ -190,7 +190,7 @@ async function startListening(isAutoRestart = false) {
         setStatus('ready', 'Too short — resuming...');
         if (isContinuousMode) {
           listenLabel.textContent = 'Resuming...';
-          setTimeout(() => startListening(true), 1000);
+          setTimeout(() => startListening(true), 300);
         } else {
           stopListeningUI();
         }
@@ -215,10 +215,22 @@ async function startListening(isAutoRestart = false) {
           const question = result.text.trim();
           processQuestion(question);
         } else {
-          showError(result.error || 'Transcription failed');
-          if (isContinuousMode) {
-            listenLabel.textContent = 'Resuming...';
-            setTimeout(() => startListening(true), 2000);
+          if (result.noSpeech) {
+            // Suppress background noise / silence without showing errors
+            setStatus('listening', 'Capturing interviewer audio from screen');
+            hideLoader();
+            if (isContinuousMode) {
+              listenLabel.textContent = 'Listening...';
+              startListening(true);
+            } else {
+              stopListeningUI();
+            }
+          } else {
+            showError(result.error || 'Transcription failed');
+            if (isContinuousMode) {
+              listenLabel.textContent = 'Resuming...';
+              setTimeout(() => startListening(true), 500);
+            }
           }
         }
       } catch (e) {
@@ -338,13 +350,13 @@ async function processQuestion(question) {
       setStatus('ready', 'Answer ready ✓');
       if (isContinuousMode) {
         listenLabel.textContent = 'Resuming...';
-        setTimeout(() => startListening(true), 1000);
+        setTimeout(() => startListening(true), 300);
       }
     } else {
       showError(result.error);
       if (isContinuousMode) {
         listenLabel.textContent = 'Resuming...';
-        setTimeout(() => startListening(true), 2000);
+        setTimeout(() => startListening(true), 500);
       }
     }
   } catch (e) {

@@ -32,12 +32,33 @@ const API_KEYS = [
 let currentKeyIndex = 0;
 console.log(`✓ Loaded ${API_KEYS.length} Gemini API key(s)`);
 console.log(process.env.GROQ_API_KEY && !process.env.GROQ_API_KEY.startsWith('your_') ? '✓ Loaded Groq API key' : '✗ No Groq API key loaded');
+console.log(process.env.OMNI_ROUTE_API_KEY && !process.env.OMNI_ROUTE_API_KEY.startsWith('your_') ? '✓ Loaded OmniRoute API key' : '✗ No OmniRoute API key loaded');
 
 function getNextKey() {
   if (API_KEYS.length === 0) return null;
   const key = API_KEYS[currentKeyIndex];
   currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
   return key;
+}
+
+// ─── Resilient Fetch (auto-retry on network failures) ────────────
+async function fetchWithRetry(url, options = {}, { retries = 2, timeoutMs = 15000, retryDelayMs = 1000 } = {}) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, { ...options, signal: controller.signal });
+      clearTimeout(timer);
+      return response;
+    } catch (err) {
+      clearTimeout(timer);
+      const isLastAttempt = attempt === retries;
+      const isNetworkError = err.name === 'AbortError' || err.message?.includes('fetch failed') || err.code === 'ECONNRESET' || err.code === 'ETIMEDOUT';
+      if (isLastAttempt || !isNetworkError) throw err;
+      console.log(`⟳ Network error on attempt ${attempt + 1}/${retries + 1}, retrying in ${retryDelayMs}ms...`);
+      await new Promise(r => setTimeout(r, retryDelayMs));
+    }
+  }
 }
 
 const storePath = path.join(app.getPath('userData'), 'profile-data.json');
@@ -169,161 +190,115 @@ function createTray() {
   });
 }
 
-// ─── Background Profile Summarizer ────────────────────────────────
-async function generateStructuredSummary(data) {
-  const groqKey = process.env.GROQ_API_KEY;
-  const naraRouterKey = process.env.NARA_ROUTER_API_KEY;
-  const geminiKey = API_KEYS[0];
 
-  const prompt = `Analyze the following candidate and job profile. Condense it into a highly dense, structured, markdown-free "Core Candidate Metadata Profile" of no more than 300 words. 
-Do NOT include any introductions, prefaces, conversational filler, markdown formatting, or lists. Output only the structured facts containing:
-- Target Job: [Role] at [Company]
-- Key Skills: [Comma separated list of core technical skills]
-- Top 3 Projects: [1-sentence summary of project name, technologies, and exact metrics/achievement]
-- Resume Highlights: [1-2 sentences summarizing core work history and achievements]
-- Context Match: [How they fit the job description]
-
-CANDIDATE DETAILS:
-Role Name: ${data.roleName || ''}
-Company Name: ${data.companyName || ''}
-Resume: ${data.resumeText || ''}
-Job Description: ${data.jobDescription || ''}
-Projects/Skills: ${data.projects || ''}
-Extra Notes: ${data.extraNotes || ''}`;
-
-  // 1. Try Groq (super fast, high rate limits)
-  if (groqKey && !groqKey.startsWith('your_')) {
-    try {
-      console.log('Generating structured profile metadata via Groq Llama-3...');
-      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${groqKey}`
-        },
-        body: JSON.stringify({
-          model: 'llama3-8b-8192',
-          messages: [{ role: 'user', content: prompt }]
-        })
-      });
-      if (response.ok) {
-        const resJson = await response.json();
-        const text = resJson.choices?.[0]?.message?.content?.trim();
-        if (text) {
-          console.log('✓ Successfully generated structured metadata via Groq.');
-          return text;
-        }
-      }
-    } catch (e) {
-      console.warn('Groq metadata generation failed:', e.message);
-    }
-  }
-
-  // 2. Try Nara Router
-  if (naraRouterKey && !naraRouterKey.startsWith('your_') && !naraRouterKey.includes('gy1N4ZJB..')) {
-    const modelName = process.env.NARA_ROUTER_MODEL || 'mimo-v2.5-free';
-    const baseUrl = process.env.NARA_ROUTER_BASE_URL || 'https://router.bynara.id/v1';
-    try {
-      console.log('Generating structured profile metadata via Nara Router...');
-      const response = await fetch(`${baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${naraRouterKey}`
-        },
-        body: JSON.stringify({
-          model: modelName,
-          messages: [{ role: 'user', content: prompt }]
-        })
-      });
-      if (response.ok) {
-        const resJson = await response.json();
-        const text = resJson.choices?.[0]?.message?.content?.trim();
-        if (text) {
-          console.log('✓ Successfully generated structured metadata via Nara Router.');
-          return text;
-        }
-      }
-    } catch (e) {
-      console.warn('Nara Router metadata generation failed:', e.message);
-    }
-  }
-
-  // 3. Fallback to Gemini
-  if (geminiKey) {
-    const { GoogleGenerativeAI } = require('@google/generative-ai');
-    try {
-      console.log('Generating structured profile metadata via Gemini...');
-      const genAI = new GoogleGenerativeAI(geminiKey);
-      const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-lite' });
-      const result = await model.generateContent(prompt);
-      const text = result.response?.text()?.trim();
-      if (text) {
-        console.log('✓ Successfully generated structured metadata via Gemini.');
-        return text;
-      }
-    } catch (e) {
-      console.warn('Gemini metadata generation failed:', e.message);
-    }
-  }
-
-  return null;
-}
 
 // ─── Prompt Builder ──────────────────────────────────────────────
 function buildPrompt(question) {
   const d = profileData;
-  const candidateContext = d.structuredSummary 
-    ? `STRUCTURED CANDIDATE METADATA PROFILE:\n${d.structuredSummary}`
-    : `Resume:
+  const candidateContext = `TARGET JOB DETAILS:
+- Role: ${d.roleName || 'Not specified'}
+- Company: ${d.companyName || 'Not specified'}
+- Target Job Description: ${d.jobDescription || 'Not provided'}
+
+DETAILED RESUME CONTENT:
 ${d.resumeText || 'Not provided'}
 
-Job Details:
-Company: ${d.companyName || 'Not specified'}
-Role: ${d.roleName || 'Not specified'}
-Job Description: ${d.jobDescription || 'Not provided'}
-
-Projects / Skills / Achievements:
+DETAILED PROJECTS, SKILLS, & ACHIEVEMENTS:
 ${d.projects || 'Not provided'}
 
-Extra Notes:
+EXTRA CANDIDATE NOTES:
 ${d.extraNotes || 'Not provided'}`;
 
-  return `You are a human job candidate answering an interview question in real-time.
-Answer this question: "${question}"
+  return `You are a candidate in a live interview. Answer: "${question}"
 
-RULES FOR A HUMAN-LIKE RESPONSE:
-1. Speak in first person ("I", "my", "we").
-2. Use simple, clear, everyday language. Avoid complex words, jargon, or standard AI lecturing templates.
-3. Sound like a real person talking naturally. Feel free to use brief conversational transitions (e.g. "To be honest...", "Well, in my last role...", "Actually...", "Basically...").
-4. Keep it highly concise (4 to 7 sentences max). Get straight to the point.
-5. Absolutely NO bullet points, NO markdown formatting, NO lists, and NO typical AI prefaces like "Sure!", "Here is an answer", or "Certainly". Start answering the question directly.
-6. Rely ONLY on the candidate context below. Do not invent any projects or details.
+RULES:
+- SUBJECT/TECHNICAL questions: explain the concept directly using your knowledge. Do NOT reference your resume or projects unless asked about your experience.
+- RESUME/PROJECT questions: answer using ONLY facts from the candidate context below. Never invent details.
+- Speak first person, natural, conversational. 3-5 sentences max.
+- NO bullet points, NO markdown, NO lists, NO filler like "Sure" or "Certainly".
+- Start answering immediately as the candidate.
 
-─── CANDIDATE CONTEXT ───
-${candidateContext}
-──────────────────────────
+─── CONTEXT ───
+Role: ${d.roleName || 'N/A'} at ${d.companyName || 'N/A'}
+JD: ${d.jobDescription || 'N/A'}
+Resume: ${d.resumeText || 'N/A'}
+Projects: ${d.projects || 'N/A'}
+Notes: ${d.extraNotes || 'N/A'}
+───────────────
+Answer now:`;
+}
+function cleanTranscriptionText(text) {
+  if (!text) return '';
+  
+  // 1. If the transcription is just a common silent audio hallucination, suppress it.
+  const lower = text.toLowerCase().trim().replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "");
+  const hallucinations = [
+    "thank you",
+    "thank you thank you",
+    "thank you very much",
+    "thank you for watching",
+    "subtitles by yify",
+    "please subscribe",
+    "subscribe to my channel",
+    "reformatted by",
+    "you"
+  ];
+  if (hallucinations.includes(lower)) {
+    return '';
+  }
 
-Begin speaking naturally now:`;
+  // 2. Remove continuous repeated words (e.g., "you you you you" or "thank thank thank")
+  let cleaned = text.replace(/\b(\w+)(?:\s+\1)+\b/gi, '$1');
+  
+  // 3. Remove repeated sentences or phrases (e.g., "Thank you. Thank you.")
+  const sentences = cleaned.split(/(?<=[.!?])\s+/);
+  const deduplicatedSentences = [];
+  let lastSentence = "";
+  let repeatCount = 0;
+  for (const sentence of sentences) {
+    const norm = sentence.trim().toLowerCase().replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "");
+    const normLast = lastSentence.trim().toLowerCase().replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "");
+    if (norm === normLast) {
+      repeatCount++;
+      if (repeatCount < 1) {
+        deduplicatedSentences.push(sentence);
+      }
+    } else {
+      deduplicatedSentences.push(sentence);
+      lastSentence = sentence;
+      repeatCount = 0;
+    }
+  }
+  cleaned = deduplicatedSentences.join(' ').trim();
+  
+  // 4. Repeatedly strip leading/trailing Whisper hallucination / silence loop phrases from the actual question
+  let cleanText = cleaned.trim();
+  let prev;
+  do {
+    prev = cleanText;
+    cleanText = cleanText.replace(/^(thank you|thanks|you|please subscribe|subscribe|thank you very much|reformatted by|subtitles by yify)[.,\s!?]*/gi, '');
+  } while (cleanText !== prev);
+
+  cleaned = cleanText.trim();
+
+  // 5. If the remaining text is just a bunch of repeated short words (like "you you"), clear it
+  const words = cleaned.toLowerCase().split(/\s+/);
+  const uniqueWords = new Set(words);
+  if (words.length > 5 && uniqueWords.size === 1) {
+    return '';
+  }
+  if (words.length > 5 && uniqueWords.size === 2 && (uniqueWords.has('thank') || uniqueWords.has('you') || uniqueWords.has('thanks'))) {
+    return '';
+  }
+
+  return cleaned;
 }
 
 // ─── IPC Handlers ────────────────────────────────────────────────
 function registerIPC() {
   ipcMain.handle('save-setup-data', async (_e, data) => {
-    // Save raw details first
+    // Save raw details
     saveProfileData(data);
-
-    // Generate structured summary in the background
-    generateStructuredSummary(data).then((summary) => {
-      if (summary) {
-        data.structuredSummary = summary;
-        saveProfileData(data);
-        console.log('✓ Background profile metadata successfully updated.');
-      }
-    }).catch((err) => {
-      console.error('Background profile generation failed:', err);
-    });
-
     return { success: true };
   });
 
@@ -352,250 +327,234 @@ function registerIPC() {
     }
   });
 
+  // ─── Helper: Stream OpenAI-compatible response ─────────────────
+  async function streamOpenAIResponse(response, webContents) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let fullText = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const line of lines) {
+        const cleaned = line.trim();
+        if (cleaned.startsWith('data: ')) {
+          const dataStr = cleaned.slice(6);
+          if (dataStr === '[DONE]') break;
+          try {
+            const data = JSON.parse(dataStr);
+            const chunk = data.choices?.[0]?.delta?.content;
+            if (chunk) {
+              fullText += chunk;
+              webContents.send('answer-chunk', chunk);
+            }
+          } catch (err) { /* skip malformed chunks */ }
+        }
+      }
+    }
+    return fullText;
+  }
+
   ipcMain.handle('generate-answer', async (e, question) => {
     const webContents = e.sender;
+    const prompt = buildPrompt(question);
+    const errors = [];
 
-    // 1. Try NaraRouter first if configured
-    const naraRouterKey = process.env.NARA_ROUTER_API_KEY;
-    if (naraRouterKey && !naraRouterKey.startsWith('your_') && !naraRouterKey.includes('gy1N4ZJB..')) {
-      const modelName = process.env.NARA_ROUTER_MODEL || 'mimo-v2.5-free';
-      const baseUrl = process.env.NARA_ROUTER_BASE_URL || 'https://router.bynara.id/v1';
+    // ══════ 1. GROQ (fastest — sub-second streaming) ══════
+    const groqKey = process.env.GROQ_API_KEY;
+    if (groqKey && !groqKey.startsWith('your_')) {
       try {
-        console.log(`Trying NaraRouter with model ${modelName} (streaming)...`);
-        const response = await fetch(`${baseUrl}/chat/completions`, {
+        console.log('⚡ Trying Groq (fastest)...');
+        const response = await fetchWithRetry('https://api.groq.com/openai/v1/chat/completions', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${naraRouterKey}`
-          },
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${groqKey}` },
           body: JSON.stringify({
-            model: modelName,
-            messages: [
-              {
-                role: 'user',
-                content: buildPrompt(question)
-              }
-            ],
-            stream: true
+            model: 'llama-3.3-70b-versatile',
+            messages: [{ role: 'user', content: prompt }],
+            stream: true,
+            temperature: 0.6,
+            max_tokens: 300
           })
         });
-
-        if (!response.ok) {
-          const errText = await response.text();
-          throw new Error(`NaraRouter HTTP error ${response.status}: ${errText}`);
-        }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let fullText = '';
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop(); // Keep incomplete line in buffer
-
-          for (const line of lines) {
-            const cleaned = line.trim();
-            if (cleaned.startsWith('data: ')) {
-              const dataStr = cleaned.slice(6);
-              if (dataStr === '[DONE]') break;
-              try {
-                const data = JSON.parse(dataStr);
-                const chunk = data.choices?.[0]?.delta?.content;
-                if (chunk) {
-                  fullText += chunk;
-                  webContents.send('answer-chunk', chunk);
-                }
-              } catch (err) {
-                // Ignore JSON parse errors for incomplete lines
-              }
-            }
-          }
-        }
-
+        if (!response.ok) throw new Error(`Groq HTTP ${response.status}`);
+        const fullText = await streamOpenAIResponse(response, webContents);
         if (fullText) {
-          console.log(`✓ Answer generated via NaraRouter — Model: ${modelName}`);
+          console.log('✓ Answer via Groq (fast path)');
           return { success: true, answer: fullText };
         }
-        throw new Error('NaraRouter returned empty response');
+        throw new Error('Groq empty response');
       } catch (e) {
-        console.warn(`✗ NaraRouter failed: ${e.message}. Falling back to Gemini...`);
+        console.warn(`✗ Groq failed: ${e.message}`);
+        errors.push(`Groq: ${e.message}`);
       }
     }
 
-    // 2. Gemini fallback
-    const { GoogleGenerativeAI } = require('@google/generative-ai');
-
-    if (API_KEYS.length === 0) {
-      return { success: false, error: 'No API keys found. Add NARA_ROUTER_API_KEY or GEMINI_API_KEY_1 to .env file.' };
+    // ══════ 2. OmniRoute ══════
+    const omniRouteKey = process.env.OMNI_ROUTE_API_KEY;
+    if (omniRouteKey && !omniRouteKey.startsWith('your_')) {
+      const modelName = process.env.OMNI_ROUTE_MODEL || 'mimo-v2.5-free';
+      const baseUrl = process.env.OMNI_ROUTE_BASE_URL || 'http://localhost:20128/v1';
+      try {
+        console.log(`Trying OmniRoute ${modelName}...`);
+        const response = await fetchWithRetry(`${baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${omniRouteKey}` },
+          body: JSON.stringify({ model: modelName, messages: [{ role: 'user', content: prompt }], stream: true })
+        });
+        if (!response.ok) throw new Error(`OmniRoute HTTP ${response.status}`);
+        const fullText = await streamOpenAIResponse(response, webContents);
+        if (fullText) {
+          console.log(`✓ Answer via OmniRoute (${modelName})`);
+          return { success: true, answer: fullText };
+        }
+        throw new Error('OmniRoute empty response');
+      } catch (e) {
+        console.warn(`✗ OmniRoute failed: ${e.message}`);
+        errors.push(`OmniRoute: ${e.message}`);
+      }
     }
 
-    // Two models to try — flash-lite has separate, higher free quota
-    const MODELS = ['gemini-2.0-flash-lite', 'gemini-2.0-flash'];
-    let lastError = '';
+    // ══════ 3. Gemini fallback ══════
+    const { GoogleGenerativeAI } = require('@google/generative-ai');
+    if (API_KEYS.length === 0) {
+      return { success: false, error: 'No API keys configured. Add GROQ_API_KEY or GEMINI_API_KEY_1 to .env file.' };
+    }
 
-    // Fast: try each key × each model (no retry delays)
+    const MODELS = ['gemini-2.0-flash-lite', 'gemini-2.0-flash'];
     for (let i = 0; i < API_KEYS.length; i++) {
       const apiKey = getNextKey();
       const keyNum = ((currentKeyIndex - 1 + API_KEYS.length) % API_KEYS.length) + 1;
-
       for (const modelName of MODELS) {
         try {
-          console.log(`Trying Gemini with model ${modelName} (streaming)...`);
+          console.log(`Trying Gemini ${modelName} (Key #${keyNum})...`);
           const genAI = new GoogleGenerativeAI(apiKey);
           const model = genAI.getGenerativeModel({ model: modelName });
-          const result = await model.generateContentStream(buildPrompt(question));
-          
+          const result = await model.generateContentStream(prompt);
           let fullText = '';
           for await (const chunk of result.stream) {
             const chunkText = chunk.text();
             fullText += chunkText;
             webContents.send('answer-chunk', chunkText);
           }
-
-          console.log(`✓ Answer generated — Key #${keyNum}, model: ${modelName}`);
+          console.log(`✓ Answer via Gemini (Key #${keyNum}, ${modelName})`);
           return { success: true, answer: fullText };
         } catch (e) {
           const msg = e.message || '';
-          const is429 = msg.includes('429');
-          const is400 = msg.includes('400') || msg.includes('API_KEY_INVALID');
-          console.warn(`✗ Key #${keyNum} / ${modelName} — ${is429 ? 'rate-limited' : is400 ? 'invalid key' : 'error'}`);
-
-          if (is400) {
-            lastError = `Key #${keyNum} is invalid or expired. Please generate a new key.`;
-            break; // Don't try other models with a bad key
-          }
-          lastError = is429 ? 'Rate limit exceeded' : msg;
+          console.warn(`✗ Gemini Key #${keyNum}/${modelName}: ${msg.substring(0, 60)}`);
+          if (msg.includes('400') || msg.includes('API_KEY_INVALID')) break;
+          errors.push(`Gemini #${keyNum}/${modelName}: ${msg}`);
         }
       }
     }
 
-    // All failed — show helpful message
-    const helpMsg = lastError.includes('invalid') || lastError.includes('API_KEY')
-      ? `${lastError}\n\nPlease update your API key in the .env file.`
-      : `${lastError}\n\nTip: Wait 1 minute or check your API key quota.`;
-
-    return { success: false, error: helpMsg };
+    return { success: false, error: errors.join('\n') || 'All providers failed.' };
   });
 
   ipcMain.handle('transcribe-audio', async (_e, base64Audio, mimeType) => {
-    // 1. Try NaraRouter Whisper first if configured
-    const naraRouterKey = process.env.NARA_ROUTER_API_KEY;
-    if (naraRouterKey && !naraRouterKey.startsWith('your_') && !naraRouterKey.includes('gy1N4ZJB..')) {
-      const baseUrl = process.env.NARA_ROUTER_BASE_URL || 'https://router.bynara.id/v1';
-      try {
-        console.log(`Trying NaraRouter Whisper transcription...`);
-        const buffer = Buffer.from(base64Audio, 'base64');
-        const formData = new FormData();
-        
-        let ext = 'webm';
-        if (mimeType && mimeType.includes('wav')) ext = 'wav';
-        else if (mimeType && mimeType.includes('mp3')) ext = 'mp3';
-        else if (mimeType && mimeType.includes('m4a')) ext = 'm4a';
+    const errors = [];
 
-        const blob = new Blob([buffer], { type: mimeType || 'audio/webm' });
-        formData.append('file', blob, `audio.${ext}`);
-        formData.append('model', 'whisper-1');
-
-        const response = await fetch(`${baseUrl}/audio/transcriptions`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${naraRouterKey}`
-          },
-          body: formData
-        });
-
-        if (response.ok) {
-          const data = await response.json();
-          const text = data.text?.trim();
-          if (text) {
-            console.log(`✓ Transcribed via NaraRouter: "${text.substring(0, 60)}..."`);
-            return { success: true, text };
-          }
-        } else {
-          const errText = await response.text();
-          console.warn(`✗ NaraRouter Whisper HTTP error ${response.status}: ${errText}`);
-        }
-      } catch (e) {
-        console.warn(`✗ NaraRouter Whisper failed: ${e.message}`);
-      }
+    // Helper: build audio form data
+    function buildFormData(model) {
+      const buffer = Buffer.from(base64Audio, 'base64');
+      const fd = new FormData();
+      let ext = 'webm';
+      if (mimeType && mimeType.includes('wav')) ext = 'wav';
+      else if (mimeType && mimeType.includes('mp3')) ext = 'mp3';
+      else if (mimeType && mimeType.includes('m4a')) ext = 'm4a';
+      const blob = new Blob([buffer], { type: mimeType || 'audio/webm' });
+      fd.append('file', blob, `audio.${ext}`);
+      fd.append('model', model);
+      return fd;
     }
 
-    // 2. Try Groq Whisper if configured
+    // Helper: process transcription result
+    function processResult(providerName, text) {
+      const cleaned = cleanTranscriptionText(text);
+      if (!cleaned) {
+        console.log(`✓ ${providerName}: "${text.substring(0, 50)}..." → silence/hallucination suppressed`);
+        return { success: false, error: 'No speech detected', noSpeech: true };
+      }
+      console.log(`✓ ${providerName}: "${cleaned.substring(0, 60)}..."`);
+      return { success: true, text: cleaned };
+    }
+
+    // ══════ 1. GROQ Whisper (fastest — sub-second) ══════
     const groqKey = process.env.GROQ_API_KEY;
     if (groqKey && !groqKey.startsWith('your_')) {
       try {
-        console.log('Trying Groq Whisper transcription...');
-        const buffer = Buffer.from(base64Audio, 'base64');
-        const groqFormData = new FormData();
-        let ext = 'webm';
-        if (mimeType && mimeType.includes('wav')) ext = 'wav';
-        else if (mimeType && mimeType.includes('mp3')) ext = 'mp3';
-        else if (mimeType && mimeType.includes('m4a')) ext = 'm4a';
-
-        const groqBlob = new Blob([buffer], { type: mimeType || 'audio/webm' });
-        groqFormData.append('file', groqBlob, `audio.${ext}`);
-        groqFormData.append('model', 'whisper-large-v3');
-
-        const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+        console.log('⚡ Transcribing via Groq Whisper (fastest)...');
+        const response = await fetchWithRetry('https://api.groq.com/openai/v1/audio/transcriptions', {
           method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${groqKey}`
-          },
-          body: groqFormData
+          headers: { 'Authorization': `Bearer ${groqKey}` },
+          body: buildFormData('whisper-large-v3')
         });
-
         if (response.ok) {
           const data = await response.json();
           const text = data.text?.trim();
-          if (text) {
-            console.log(`✓ Transcribed via Groq: "${text.substring(0, 60)}..."`);
-            return { success: true, text };
-          }
+          if (text) return processResult('Groq', text);
         } else {
-          const errText = await response.text();
-          console.warn(`✗ Groq Whisper HTTP error ${response.status}: ${errText}`);
+          console.warn(`✗ Groq Whisper HTTP ${response.status}`);
+          errors.push(`Groq: HTTP ${response.status}`);
         }
       } catch (e) {
         console.warn(`✗ Groq Whisper failed: ${e.message}`);
+        errors.push(`Groq: ${e.message}`);
       }
     }
 
-    // 3. Gemini fallback
-    const { GoogleGenerativeAI } = require('@google/generative-ai');
+    // ══════ 2. OmniRoute Whisper ══════
+    const omniRouteKey = process.env.OMNI_ROUTE_API_KEY;
+    if (omniRouteKey && !omniRouteKey.startsWith('your_')) {
+      const baseUrl = process.env.OMNI_ROUTE_BASE_URL || 'http://localhost:20128/v1';
+      try {
+        console.log('Transcribing via OmniRoute Whisper...');
+        const response = await fetchWithRetry(`${baseUrl}/audio/transcriptions`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${omniRouteKey}` },
+          body: buildFormData('whisper-1')
+        });
+        if (response.ok) {
+          const data = await response.json();
+          const text = data.text?.trim();
+          if (text) return processResult('OmniRoute', text);
+        } else {
+          console.warn(`✗ OmniRoute Whisper HTTP ${response.status}`);
+          errors.push(`OmniRoute: HTTP ${response.status}`);
+        }
+      } catch (e) {
+        console.warn(`✗ OmniRoute Whisper failed: ${e.message}`);
+        errors.push(`OmniRoute: ${e.message}`);
+      }
+    }
 
+    // ══════ 3. Gemini fallback ══════
+    const { GoogleGenerativeAI } = require('@google/generative-ai');
     if (API_KEYS.length === 0) {
-      return { success: false, error: 'No API keys found. Add GEMINI_API_KEY_1 to .env file.' };
+      return { success: false, error: 'No API keys found. Add GROQ_API_KEY or GEMINI_API_KEY_1 to .env.' };
     }
 
     for (let i = 0; i < API_KEYS.length; i++) {
       const apiKey = getNextKey();
       const keyNum = ((currentKeyIndex - 1 + API_KEYS.length) % API_KEYS.length) + 1;
-
       try {
         const genAI = new GoogleGenerativeAI(apiKey);
         const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-
         const result = await model.generateContent([
-          { text: 'Transcribe the following audio exactly as spoken. Return ONLY the transcription text, nothing else. No quotes, no labels, no formatting.' },
+          { text: 'Transcribe the following audio exactly as spoken. Return ONLY the transcription text, nothing else.' },
           { inlineData: { mimeType: mimeType || 'audio/webm', data: base64Audio } },
         ]);
-
         const text = result.response.text().trim();
-        console.log(`✓ Transcribed (Key #${keyNum}): "${text.substring(0, 60)}..."`);
-        return { success: true, text };
+        return processResult(`Gemini #${keyNum}`, text);
       } catch (e) {
-        const msg = e.message || '';
-        console.warn(`✗ Transcription Key #${keyNum} — ${msg.substring(0, 80)}`);
-        if (msg.includes('400') || msg.includes('API_KEY_INVALID')) continue;
+        console.warn(`✗ Gemini Transcription Key #${keyNum}: ${(e.message || '').substring(0, 60)}`);
+        errors.push(`Gemini #${keyNum}: ${e.message}`);
       }
     }
 
-    return { success: false, error: 'Transcription failed: Gemini API quota exceeded or key invalid. (Free tier keys share project quota - try creating a new key in a new AI Studio project)' };
+    return { success: false, error: errors.join('; ') || 'All transcription providers failed.' };
   });
 
   ipcMain.handle('start-practice', async () => {
