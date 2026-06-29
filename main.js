@@ -169,9 +169,126 @@ function createTray() {
   });
 }
 
+// ─── Background Profile Summarizer ────────────────────────────────
+async function generateStructuredSummary(data) {
+  const groqKey = process.env.GROQ_API_KEY;
+  const naraRouterKey = process.env.NARA_ROUTER_API_KEY;
+  const geminiKey = API_KEYS[0];
+
+  const prompt = `Analyze the following candidate and job profile. Condense it into a highly dense, structured, markdown-free "Core Candidate Metadata Profile" of no more than 300 words. 
+Do NOT include any introductions, prefaces, conversational filler, markdown formatting, or lists. Output only the structured facts containing:
+- Target Job: [Role] at [Company]
+- Key Skills: [Comma separated list of core technical skills]
+- Top 3 Projects: [1-sentence summary of project name, technologies, and exact metrics/achievement]
+- Resume Highlights: [1-2 sentences summarizing core work history and achievements]
+- Context Match: [How they fit the job description]
+
+CANDIDATE DETAILS:
+Role Name: ${data.roleName || ''}
+Company Name: ${data.companyName || ''}
+Resume: ${data.resumeText || ''}
+Job Description: ${data.jobDescription || ''}
+Projects/Skills: ${data.projects || ''}
+Extra Notes: ${data.extraNotes || ''}`;
+
+  // 1. Try Groq (super fast, high rate limits)
+  if (groqKey && !groqKey.startsWith('your_')) {
+    try {
+      console.log('Generating structured profile metadata via Groq Llama-3...');
+      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${groqKey}`
+        },
+        body: JSON.stringify({
+          model: 'llama3-8b-8192',
+          messages: [{ role: 'user', content: prompt }]
+        })
+      });
+      if (response.ok) {
+        const resJson = await response.json();
+        const text = resJson.choices?.[0]?.message?.content?.trim();
+        if (text) {
+          console.log('✓ Successfully generated structured metadata via Groq.');
+          return text;
+        }
+      }
+    } catch (e) {
+      console.warn('Groq metadata generation failed:', e.message);
+    }
+  }
+
+  // 2. Try Nara Router
+  if (naraRouterKey && !naraRouterKey.startsWith('your_') && !naraRouterKey.includes('gy1N4ZJB..')) {
+    const modelName = process.env.NARA_ROUTER_MODEL || 'mimo-v2.5-free';
+    const baseUrl = process.env.NARA_ROUTER_BASE_URL || 'https://router.bynara.id/v1';
+    try {
+      console.log('Generating structured profile metadata via Nara Router...');
+      const response = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${naraRouterKey}`
+        },
+        body: JSON.stringify({
+          model: modelName,
+          messages: [{ role: 'user', content: prompt }]
+        })
+      });
+      if (response.ok) {
+        const resJson = await response.json();
+        const text = resJson.choices?.[0]?.message?.content?.trim();
+        if (text) {
+          console.log('✓ Successfully generated structured metadata via Nara Router.');
+          return text;
+        }
+      }
+    } catch (e) {
+      console.warn('Nara Router metadata generation failed:', e.message);
+    }
+  }
+
+  // 3. Fallback to Gemini
+  if (geminiKey) {
+    const { GoogleGenerativeAI } = require('@google/generative-ai');
+    try {
+      console.log('Generating structured profile metadata via Gemini...');
+      const genAI = new GoogleGenerativeAI(geminiKey);
+      const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-lite' });
+      const result = await model.generateContent(prompt);
+      const text = result.response?.text()?.trim();
+      if (text) {
+        console.log('✓ Successfully generated structured metadata via Gemini.');
+        return text;
+      }
+    } catch (e) {
+      console.warn('Gemini metadata generation failed:', e.message);
+    }
+  }
+
+  return null;
+}
+
 // ─── Prompt Builder ──────────────────────────────────────────────
 function buildPrompt(question) {
   const d = profileData;
+  const candidateContext = d.structuredSummary 
+    ? `STRUCTURED CANDIDATE METADATA PROFILE:\n${d.structuredSummary}`
+    : `Resume:
+${d.resumeText || 'Not provided'}
+
+Job Details:
+Company: ${d.companyName || 'Not specified'}
+Role: ${d.roleName || 'Not specified'}
+Job Description: ${d.jobDescription || 'Not provided'}
+
+Projects / Skills / Achievements:
+${d.projects || 'Not provided'}
+
+Extra Notes:
+${d.extraNotes || 'Not provided'}`;
+
   return `You are a human job candidate answering an interview question in real-time.
 Answer this question: "${question}"
 
@@ -184,19 +301,7 @@ RULES FOR A HUMAN-LIKE RESPONSE:
 6. Rely ONLY on the candidate context below. Do not invent any projects or details.
 
 ─── CANDIDATE CONTEXT ───
-Resume:
-${d.resumeText || 'Not provided'}
-
-Job Details:
-Company: ${d.companyName || 'Not specified'}
-Role: ${d.roleName || 'Not specified'}
-Job Description: ${d.jobDescription || 'Not provided'}
-
-Projects / Skills / Achievements:
-${d.projects || 'Not provided'}
-
-Extra Notes:
-${d.extraNotes || 'Not provided'}
+${candidateContext}
 ──────────────────────────
 
 Begin speaking naturally now:`;
@@ -205,7 +310,20 @@ Begin speaking naturally now:`;
 // ─── IPC Handlers ────────────────────────────────────────────────
 function registerIPC() {
   ipcMain.handle('save-setup-data', async (_e, data) => {
+    // Save raw details first
     saveProfileData(data);
+
+    // Generate structured summary in the background
+    generateStructuredSummary(data).then((summary) => {
+      if (summary) {
+        data.structuredSummary = summary;
+        saveProfileData(data);
+        console.log('✓ Background profile metadata successfully updated.');
+      }
+    }).catch((err) => {
+      console.error('Background profile generation failed:', err);
+    });
+
     return { success: true };
   });
 
