@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Interview Practice Assistant</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="setup.css" />
+</head>
+<body>
+  <!-- ── Custom Title Bar ── -->
+  <header class="titlebar" id="titlebar">
+    <div class="titlebar-drag">
+      <span class="titlebar-icon">🎯</span>
+      <span class="titlebar-title">Interview Practice Assistant</span>
+      <span class="titlebar-badge">PRACTICE MODE</span>
+    </div>
+    <div class="titlebar-controls">
+      <button class="tb-btn minimize" id="btnMinimize">
+        <svg width="12" height="12" viewBox="0 0 12 12"><rect y="5" width="12" height="2" rx="1" fill="currentColor"/></svg>
+      </button>
+      <button class="tb-btn close" id="btnClose">
+        <svg width="12" height="12" viewBox="0 0 12 12"><path d="M1 1l10 10M11 1L1 11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- ── Main Content ── -->
+  <main class="main-scroll">
+    <div class="container">
+      <!-- Hero -->
+      <section class="hero">
+        <h1>Setup Your <span class="gradient-text">Interview Profile</span></h1>
+        <p class="hero-sub">Fill in your details below. The AI will use this to generate personalized, interview-ready answers during practice.</p>
+      </section>
+
+      <!-- Form -->
+      <form id="setupForm" autocomplete="off">
+        <!-- Resume -->
+        <div class="card full">
+          <div class="card-header">
+            <span class="card-icon">📄</span>
+            <h2>Resume</h2>
+          </div>
+          <div class="upload-zone" id="uploadZone">
+            <div class="upload-visual">
+              <div class="upload-ring"></div>
+              <span class="upload-emoji">📤</span>
+            </div>
+            <p class="upload-label">Click or drag & drop your <strong>PDF resume</strong></p>
+            <span class="upload-status" id="uploadStatus">No file selected</span>
+          </div>
+          <div class="divider-or"><span>OR</span></div>
+          <textarea id="resumeText" class="field-textarea" placeholder="Paste your resume content here..." rows="4"></textarea>
+        </div>
+
+        <!-- Company + Role row -->
+        <div class="row-2">
+          <div class="card">
+            <div class="card-header"><span class="card-icon">🏢</span><h2>Company</h2></div>
+            <input id="companyName" class="field-input" type="text" placeholder="e.g. Google, Microsoft" />
+          </div>
+          <div class="card">
+            <div class="card-header"><span class="card-icon">💼</span><h2>Role / Position</h2></div>
+            <input id="roleName" class="field-input" type="text" placeholder="e.g. Software Engineer" />
+          </div>
+        </div>
+
+        <!-- Job Description -->
+        <div class="card full">
+          <div class="card-header"><span class="card-icon">📋</span><h2>Job Description</h2></div>
+          <textarea id="jobDescription" class="field-textarea" placeholder="Paste the full job description here..." rows="5"></textarea>
+        </div>
+
+        <!-- Projects / Skills -->
+        <div class="card full">
+          <div class="card-header"><span class="card-icon">🚀</span><h2>Projects / Skills / Achievements</h2></div>
+          <textarea id="projects" class="field-textarea" placeholder="List key projects, technical skills, certifications, achievements..." rows="4"></textarea>
+        </div>
+
+        <!-- Extra Notes -->
+        <div class="card full">
+          <div class="card-header"><span class="card-icon">📝</span><h2>Extra Notes</h2></div>
+          <textarea id="extraNotes" class="field-textarea" placeholder="Anything else the AI should know — hobbies, leadership style, career goals..." rows="3"></textarea>
+        </div>
+
+        <!-- Actions -->
+        <div class="actions">
+          <button type="button" id="saveBtn" class="btn btn-ghost">
+            <span>💾</span> Save Profile
+          </button>
+          <button type="button" id="startBtn" class="btn btn-primary">
+            <span>🎙️</span> Start Practice
+          </button>
+        </div>
+      </form>
+
+      <!-- Instructions -->
+      <section class="how-to">
+        <h3>How It Works</h3>
+        <div class="steps">
+          <div class="step"><span class="step-n">1</span><p>Fill in your profile details above</p></div>
+          <div class="step"><span class="step-n">2</span><p>Click <strong>Start Practice</strong> — the app moves to your system tray</p></div>
+          <div class="step"><span class="step-n">3</span><p>Press <kbd>Ctrl + Shift + A</kbd> to toggle the floating overlay</p></div>
+          <div class="step"><span class="step-n">4</span><p>Click <strong>🎤 Listen</strong> — speak an interview question aloud</p></div>
+          <div class="step"><span class="step-n">5</span><p>Read the AI-generated answer on the overlay</p></div>
+        </div>
+      </section>
+
+      <!-- Disclaimer -->
+      <footer class="disclaimer">
+        ⚠️ This tool is for <strong>mock interview practice only</strong>. Not intended for use in real interviews.
+      </footer>
+    </div>
+  </main>
+
+  <!-- Toast -->
+  <div class="toast" id="toast"></div>
+
+  <script src="setup.js"></script>
+</body>
+</html>

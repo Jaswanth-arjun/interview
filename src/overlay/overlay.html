@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Overlay</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="overlay.css" />
+</head>
+<body>
+  <div class="overlay-panel" id="panel">
+    <!-- Drag Handle -->
+    <div class="drag-bar" id="dragBar">
+      <div class="drag-dots">
+        <span></span><span></span><span></span>
+      </div>
+      <span class="drag-label">Interview Practice</span>
+      <div class="drag-actions">
+        <button class="icon-btn" id="btnSetup" title="Open Setup">⚙️</button>
+        <button class="icon-btn" id="btnClose" title="Hide (Ctrl+Shift+A)">✕</button>
+      </div>
+    </div>
+
+    <!-- Status -->
+    <div class="status-bar" id="statusBar">
+      <div class="status-dot" id="statusDot"></div>
+      <span class="status-text" id="statusText">Ready — Click 🎤 to capture interviewer audio</span>
+    </div>
+
+    <!-- Detected Question -->
+    <div class="section">
+      <div class="section-label">🎤 Detected Question</div>
+      <div class="section-box" id="questionBox">
+        <p class="placeholder" id="questionPlaceholder">Interviewer's question will appear here...</p>
+        <p class="content" id="questionText" style="display:none;"></p>
+      </div>
+    </div>
+
+    <!-- AI Answer -->
+    <div class="section answer-section">
+      <div class="section-label">
+        🤖 AI Suggested Answer
+        <button class="copy-btn" id="btnCopy" title="Copy answer">📋</button>
+      </div>
+      <div class="section-box answer-box" id="answerBox">
+        <p class="placeholder" id="answerPlaceholder">Answer will appear here...</p>
+        <p class="content" id="answerText" style="display:none;"></p>
+        <div class="loader" id="loader" style="display:none;">
+          <div class="loader-bar"></div>
+          <span>Generating answer...</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="controls">
+      <button class="ctrl-btn listen-btn" id="btnListen">
+        <span class="mic-icon">🎤</span>
+        <span class="ctrl-label" id="listenLabel">Capture Audio</span>
+      </button>
+      <button class="ctrl-btn type-btn" id="btnType">
+        ⌨️ <span class="ctrl-label">Type Question</span>
+      </button>
+    </div>
+
+    <!-- Manual Question Input (hidden by default) -->
+    <div class="manual-input" id="manualInput" style="display:none;">
+      <input type="text" id="manualQ" class="manual-field" placeholder="Type your interview question..." />
+      <button class="ctrl-btn send-btn" id="btnSend">➤</button>
+    </div>
+  </div>
+
+  <script src="overlay.js"></script>
+</body>
+</html>
